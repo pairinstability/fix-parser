@@ -1,0 +1,8 @@
+# build artifacts
+build
+# built binaries
+bin
+# editor
+.cache
+.vscode
+# other
