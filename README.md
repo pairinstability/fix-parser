@@ -5,6 +5,8 @@ Financial Information eXchange (FIX) is the de-facto messaging standard for pre-
 
 this library parses FIX messages and displays them in a human-readable way.
 
+it also has checksum validation.
+
 XML of spec is in `spec`. FIX message samples are in `samples`. example usage is in `examples`.
 
 ![](img/example.png)
