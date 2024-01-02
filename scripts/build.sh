@@ -3,9 +3,7 @@
 set -e
 
 export CXX_LD="mold"
-# need to use g++ instead of clang++ since my default (14) is not new enough
-# and cba to install a newer version
-export CXX="g++"
+export CXX="clang++-16"
 
 ROOT_SRC_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd )"
 BUILD_DIR="$ROOT_SRC_DIR/build"

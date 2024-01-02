@@ -1,6 +1,9 @@
 #ifndef FIX_PARSER_H_
 #define FIX_PARSER_H_
 
+#include <absl/log/log.h>
+#include <absl/status/statusor.h>
+#include <absl/strings/ascii.h>
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
@@ -26,8 +29,6 @@ namespace fixparser {
 // the FixParser class provides an interface to print a FIX message into something
 // human readable from a std::string directly or from reading a file. it can also
 // read multiple FIX messages from a file, printing them all.
-//
-// TODO: add FIX message validation such as checking checksum, valid fields etc
 class FixParser {
 private:
     // the FIX message consists of n pairs delimited by a character. this is an
@@ -92,8 +93,12 @@ private:
 
     // parses a FIX message, as string, into a FixMessage structure containing
     // the header, body, and trailer.
-    std::optional<FixMessage> parseFixMessage(const std::string& msg)
+    absl::StatusOr<FixMessage> parseFixMessage(std::string& msg)
     {
+        // strip any trailing whitespace otherwise std::stoi crashes
+        // https://github.com/abseil/abseil-cpp/blob/master/absl/strings/ascii.h#L199-L239
+        absl::StripTrailingAsciiWhitespace(&msg);
+
         // parse the FIX message into a series of tag,value pairs
         for (const auto& x : msg | std::views::split(SOH)) {
             Field fix;
@@ -157,7 +162,7 @@ private:
                             FixFieldValue v;
                             v.description = static_cast<std::string>(value.attribute("description").as_string());
                             field.enum_description = v.description;
-                            continue;
+                            break;
                         }
                     }
 
@@ -187,15 +192,16 @@ private:
             message.header = std::move(header);
             message.body = std::move(body);
             message.trailer = std::move(trailer);
-            message.raw_message = std::move(msg);
+            message.raw_message = msg;
 
             // clear this in the case of parsing multiple messages sequentially
             unparsed_fields.clear();
 
         } else {
             // at this point, the XML parsing has failed for some reason. we definitely
-            // should never get here
-            return std::nullopt;
+            // should never get here. most likely is incorrect path, but we'll use a more
+            // generic error here anyway
+            return absl::FailedPreconditionError("parsing of XML FIX spec failed");
         }
 
         return message;
@@ -235,13 +241,52 @@ public:
     FixParser(const fs::path& file_path)
         : fix_msgs_(readFile(file_path)) {};
 
+    // compare the computed checksum to the checksum in the message. if they do not match, print an error.
+    // uses the vector of messages, so can also validate checksums for multiple messages read from a file.
+    void validateChecksum()
+    {
+        for (std::string& fix_msg : fix_msgs_) {
+            int calculated_checksum = 0;
+
+            // checksum will always be the last field, so trim that since that isn't used to calculate
+            // the checksum
+            size_t penultimate_soh = fix_msg.find_last_of('|', fix_msg.find_last_of('|') - 1);
+            std::string trimmed_msg = fix_msg.substr(0, penultimate_soh + 1);
+
+            for (auto& c : trimmed_msg) {
+                // the SOH is 1 but since we use a |, manually set the value
+                if (c == '|') {
+                    calculated_checksum += 1;
+                } else {
+                    calculated_checksum += static_cast<int>(c);
+                }
+            }
+
+            calculated_checksum %= 256;
+
+            // parse the string and get the checksum from there
+            auto parsed = parseFixMessage(fix_msg);
+            if (parsed.ok()) {
+                auto parsed_msg = parsed.value();
+
+                for (auto& field : parsed_msg.trailer.trailer) {
+                    if (std::strcmp(field.name.c_str(), "CheckSum") == 0) {
+                        if (std::stoi(field.value) != calculated_checksum) {
+                            PLOG(ERROR) << "invalid checksum for message '" << fix_msg << "'";
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // main interface to print the FIX message in a human readable way
     void pprint()
     {
         for (std::string& fix_msg : fix_msgs_) {
             auto parsed = parseFixMessage(fix_msg);
 
-            if (parsed.has_value()) {
+            if (parsed.ok()) {
                 auto parsed_msg = parsed.value();
 
                 std::cout << "FIX message:" << std::endl;
@@ -268,7 +313,7 @@ public:
                 }
                 std::cout << "\n";
             } else {
-                std::cerr << "FIX message could not be parsed" << std::endl;
+                PLOG(ERROR) << "unexpected error " << parsed.status();
             }
         }
     };
